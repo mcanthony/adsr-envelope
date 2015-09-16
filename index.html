@@ -14,10 +14,15 @@
 <body>
   <div id="app" class="container">
     <h1>ADSREnvelope</h1>
-      <div class="form-group col">
-        <button class="btn btn-default" v-on="click:play">play envelope</button>
+      <div class="row">
+        <div class="col-md-2 form-group">
+          <button class="btn btn-default" v-on="click:play">play envelope</button>
+        </div>
+        <div class="col-md-10">
+          <select class="form-control" v-model="selectedMIDIDevice" options="midiDevices" v-if="midiDevices" v-on="change:selectMIDIDevice"></select>
+        </div>
       </div>
-      <div class="rows">
+      <div class="row">
         <div class="col-md-6">
           <textarea class="form-control" rows="12" style="color: {{ error ? 'red' : 'black' }}" v-model="data" v-on="input:onInput"></textarea>
         </div>
@@ -53,7 +58,8 @@
     var imageData = null;
     var duration = 0;
     var startTime = -1;
-    var gcGuard = [];
+    var GCGuard = [];
+    var midiAccess = null;
 
     canvas.width = canvas.clientWidth;
     canvas.height = canvas.clientHeight;
@@ -76,7 +82,7 @@
       var pack = [ osc1, osc2, envGain, ampGain ];
 
       function reset() {
-        gcGuard.splice(0).forEach(function(pack) {
+        GCGuard.splice(0).forEach(function(pack) {
           pack.forEach(function(node) {
             node.disconnect();
           });
@@ -99,7 +105,7 @@
       osc2.stop(t1);
 
       osc1.onended = reset;
-      gcGuard.push(pack);
+      GCGuard.push(pack);
 
       env.applyTo(envGain.gain, t0);
 
@@ -238,12 +244,100 @@
       context.startRendering();
     }
 
-    new Vue({
+    function midiSuccessCallback(_midiAccess) {
+      midiAccess = _midiAccess;
+      midiAccess.onstatechange = midiOnStateChange;
+      midiOnStateChange();
+    }
+
+    function midiOnStateChange() {
+      var list = [
+        { text: "select midi keyboard", value: "" },
+      ];
+      var iter = midiAccess.inputs.values();
+
+      for (var x = iter.next(); !x.done; x = iter.next()) {
+        list.push({
+          text: x.value.name, value: x.value.name,
+        });
+      }
+
+      app.midiDevices = list;
+    }
+
+    function findMIDIPortByName(iter, deviceName) {
+      for (var x = iter.next(); !x.done; x = iter.next()) {
+        if (x.value.name === deviceName) {
+          return x.value;
+        }
+      }
+
+      return null;
+    }
+
+    function midicps(noteNumber) {
+      return 440 * Math.pow(2, (noteNumber - 69) * 1 / 12);
+    }
+
+    function MIDIKeyboard(audioContext) {
+      this.audioContext = audioContext;
+      this.noteNumber = 0;
+      this.startTime = 0;
+      this.envelope = null;
+      this.oscillator = null;
+      this.gain = null;
+    }
+
+    MIDIKeyboard.prototype.noteOn = function(noteNumber) {
+      if (this.noteNumber !== 0) {
+        return;
+      }
+      this.envelope = new ADSREnvelope(JSON.parse(app.data));
+      this.envelope.gateTime = Infinity;
+      this.startTime = this.audioContext.currentTime;
+
+      this.gain = this.audioContext.createGain();
+      this.envelope.applyTo(this.gain.gain, startTime);
+      this.gain.connect(this.audioContext.destination);
+
+      this.oscillator = this.audioContext.createOscilator();
+      this.oscillator.frequency.value = midicps(noteNumber);
+      this.oscillator.start(startTime);
+      this.oscillator.onended = function() {
+        this.oscillator.disconnect();
+        this.gain.disconnect();
+        this.oscillator = this.gain = null;
+      };
+      this.oscillator.connect(this.gain);
+
+      this.noteNumber = noteNumber;
+    };
+
+    MIDIKeyboard.prototype.noteOff = function(noteNumber) {
+      if (this.noteNumber !== noteNumber) {
+        return;
+      }
+      var startTime = this.startTime;
+      var gateTime = this.audioContext.currentTime - startTime;
+
+      this.envelope.gateTime = gateTime;
+      this.envelope.applyTo(this.gain.gain, startTime);
+
+      this.oscillator.stop(startTime + this.envelope.duration);
+
+      this.noteNumber = 0;
+    };
+
+    var midiKeyboard = new MIDIKeyboard(audioContext);
+
+    var app = new Vue({
       el: "#app",
       data: {
         data: JSON.stringify(DefaultParams, null, 2),
         code: "",
         error: false,
+        selectedMIDIDevice: "",
+        midiDevices: null,
       },
       methods: {
         play: function() {
@@ -267,6 +361,33 @@
 
           return this;
         },
+        selectMIDIDevice: function() {
+          if (this.selectedMIDIDevice === "") {
+            return;
+          }
+
+          var midiDevice = findMIDIPortByName(midiAccess.inputs.values(), this.selectedMIDIDevice);
+
+          if (midiDevice) {
+            midiDevice.open(function() {
+              midiDevice.onmidimessage = function(e) {
+                var st = e.data[0], d1 = e.data[1], d2 = e.data[2];
+                var messageType = st & 0xf0;
+
+                if (messageType === 0x80) {
+                  midiKeyboard.noteOff(d1);
+                }
+                if (messageType === 0x90) {
+                  if (d2 === 0) {
+                    midiKeyboard.noteOff(d1);
+                  } else {
+                    midiKeyboard.noteOn(d1);
+                  }
+                }
+              };
+            });
+          }
+        },
         onInput: function() {
           this.error = !isValidJSON(this.data);
           if (!this.error) {
@@ -276,6 +397,10 @@
         }
       }
     }).update().draw();
+
+    if (typeof window.navigator.requestMIDIAccess === "function") {
+      window.navigator.requestMIDIAccess().then(midiSuccessCallback);
+    }
   };
   </script>
 </body>
