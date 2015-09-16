@@ -48,9 +48,9 @@ npm install @mohayonao/adsr-envelope
 - `releaseCurve: string`
 
 #### Instance Methods
-- `valueAt(time: number): number`
-- `applyTo(audioParam: AudioParam, playbackTime: number): self`
-- `getWebAudioAPIMethods(): Array[]`
+- `valueAt(time: number = 0): number`
+- `applyTo(audioParam: AudioParam, playbackTime: number = 0): self`
+- `getWebAudioAPIMethods(playbackTime: number = 0): Array[]`
 - `clone(): ADSREnvelope`
 
 ## Example
